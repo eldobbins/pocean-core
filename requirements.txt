@@ -1,6 +1,6 @@
 netcdf4
-numpy>=1.15
-pandas>=0.24,<1.0
+numpy=1.16.6
+pandas=1.2.4
 pygc>=1.2.0
 python-dateutil
 pytz
