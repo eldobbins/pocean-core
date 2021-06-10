@@ -3,19 +3,26 @@
 import six
 from copy import copy
 from collections import OrderedDict
+from cftime import date2num
 
 import numpy as np
 import pandas as pd
 
 from pocean.utils import (
+    create_ncvar_from_series,
+    dict_update,
+    downcast_dataframe,
     generic_masked,
     get_default_axes,
+    get_dtype,
     get_mapped_axes_variables,
     get_masked_datetime_array,
-    normalize_array,
+    get_ncdata_from_series,
+    nativize_times,
     normalize_countable_array,
+    normalize_array
 )
-from pocean.cf import CFDataset
+from pocean.cf import CFDataset, cf_safe_name
 from pocean.dsg.profile import profile_calculated_metadata
 
 from pocean import logger as L  # noqa
@@ -98,7 +105,92 @@ class OrthogonalMultidimensionalProfile(CFDataset):
 
     @classmethod
     def from_dataframe(cls, df, output, **kwargs):
-        raise NotImplementedError
+        axes = get_default_axes(kwargs.pop('axes', {}))
+        daxes = axes
+        data_columns = [ d for d in df.columns if d not in axes ]
+
+        unlimited = kwargs.pop('unlimited', False)
+
+        unique_dims = kwargs.pop('unique_dims', False)
+        if unique_dims is True:
+            # Rename the dimension to avoid a dimension and coordinate having the same name
+            # which is not support in xarray
+            changed_axes = { k: '{}_dim'.format(v) for k, v in axes._asdict().items() }
+            daxes = get_default_axes(changed_axes)
+
+        # Downcast anything from int64 to int32
+        # Convert any timezone aware datetimes to native UTC times
+        df = downcast_dataframe(nativize_times(df))
+
+        with OrthogonalMultidimensionalProfile(output, 'w') as nc:
+
+            profile_group = df.groupby(axes.profile)
+
+            if unlimited is True:
+                max_profiles = None
+            else:
+                max_profiles = df[axes.profile].unique().size
+            nc.createDimension(daxes.profile, max_profiles)
+
+            max_zs = profile_group.size().max()
+            nc.createDimension(daxes.z, max_zs)
+
+            # Metadata variables
+            nc.createVariable('crs', 'i4')
+
+            profile = nc.createVariable(axes.profile, get_dtype(df[axes.profile]), (daxes.profile,))
+
+            # Create all of the variables
+            time = nc.createVariable(axes.t, 'f8', (daxes.profile,))
+            latitude = nc.createVariable(axes.y, get_dtype(df[axes.y]), (daxes.profile,))
+            longitude = nc.createVariable(axes.x, get_dtype(df[axes.x]), (daxes.profile,))
+            z = nc.createVariable(axes.z, get_dtype(df[axes.z]), (daxes.profile, daxes.z), fill_value=df[axes.z].dtype.type(cls.default_fill_value))
+
+            attributes = dict_update(nc.nc_attributes(axes, daxes), kwargs.pop('attributes', {}))
+
+            # Create vars based on full dataframe (to get all variables)
+            for c in data_columns:
+                var_name = cf_safe_name(c)
+                if var_name not in nc.variables:
+                    v = create_ncvar_from_series(
+                        nc,
+                        var_name,
+                        (daxes.profile, daxes.z),
+                        df[c],
+                        zlib=True,
+                        complevel=1
+                    )
+                    attributes[var_name] = dict_update(attributes.get(var_name, {}), {
+                        'coordinates': '{} {} {} {}'.format(
+                            axes.t, axes.z, axes.x, axes.y
+                        )
+                    })
+
+            # Write values for each profile within profile_group
+            for i, (uid, pdf) in enumerate(profile_group):
+                profile[i] = uid
+
+                time[i] = date2num(pdf[axes.t].iloc[0], units=cls.default_time_unit)
+                latitude[i] = pdf[axes.y].iloc[0]
+                longitude[i] = pdf[axes.x].iloc[0]
+
+                zvalues = pdf[axes.z].fillna(z._FillValue).values
+                sl = slice(0, zvalues.size)
+                z[i, sl] = zvalues
+
+                for c in data_columns:
+                    var_name = cf_safe_name(c)
+                    v = nc.variables[var_name]
+
+                    vvalues = get_ncdata_from_series(pdf[c], v)
+
+                    sl = slice(0, vvalues.size)
+                    v[i, sl] = vvalues
+
+            # Set global attributes
+            nc.update_attributes(attributes)
+
+        return OrthogonalMultidimensionalProfile(output, **kwargs)
 
     def calculated_metadata(self, df=None, geometries=True, clean_cols=True, clean_rows=True, **kwargs):
         axes = get_default_axes(kwargs.pop('axes', {}))
@@ -202,3 +294,30 @@ class OrthogonalMultidimensionalProfile(CFDataset):
             df = df.iloc[~building_index_to_drop]
 
         return df
+
+    def nc_attributes(self, axes, daxes):
+        atts = super(OrthogonalMultidimensionalProfile, self).nc_attributes()
+        return dict_update(atts, {
+            'global' : {
+                'featureType': 'profile',
+                'cdm_data_type': 'Profile'
+            },
+            axes.profile : {
+                'cf_role': 'profile_id',
+                'long_name' : 'profile identifier'
+            },
+            axes.x: {
+                'axis': 'X'
+            },
+            axes.y: {
+                'axis': 'Y'
+            },
+            axes.z: {
+                'axis': 'Z'
+            },
+            axes.t: {
+                'units': self.default_time_unit,
+                'standard_name': 'time',
+                'axis': 'T'
+            }
+        })

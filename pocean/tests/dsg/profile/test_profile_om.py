@@ -6,6 +6,7 @@ import unittest
 
 from dateutil.parser import parse as dtparse
 import numpy as np
+import pandas as pd
 
 from pocean.cf import CFDataset
 from pocean.dsg import OrthogonalMultidimensionalProfile
@@ -15,6 +16,38 @@ import logging
 from pocean import logger
 logger.level = logging.INFO
 logger.handlers = [logging.StreamHandler()]
+
+
+class TestOMPStrings(unittest.TestCase):
+
+    def setUp(self):
+        self.df = pd.read_csv(os.path.join(os.path.dirname(__file__), 'resources', 'nga_2021.csv'), parse_dates=['time'])
+
+    def test_print_dtypes(self):
+        print(self.df.dtypes)
+
+    def test_write_nc(self):
+        fid, single_tmp = tempfile.mkstemp(suffix='.nc')
+
+        self.df['z'] = self.df['pressure']
+        axes = {
+            't': 'time',
+            'x': 'longitude',
+            'y': 'latitude',
+            'z': 'z',
+            'profile': 'cast'
+        }
+
+        with OrthogonalMultidimensionalProfile.from_dataframe(self.df,
+                                                              single_tmp,
+                                                              axes=axes,
+                                                              mode='a') as ncd:
+            ncd.renameDimension('cast', 'profile')
+
+        # need to set-up something in test_new.py for this to work
+        # test_is_mine(OrthogonalMultidimensionalProfile, single_tmp)  # Try to load it again
+        os.close(fid)
+        os.remove(single_tmp)
 
 
 class TestOrthogonalMultidimensionalProfile(unittest.TestCase):
