@@ -61,15 +61,12 @@ class TestOrthogonalMultidimensionalProfile(unittest.TestCase):
         OrthogonalMultidimensionalProfile(self.multi).close()
 
     def test_omp_dataframe_single(self):
-        CFDataset.load(self.single)
-
         fid, single_tmp = tempfile.mkstemp(suffix='.nc')
         with OrthogonalMultidimensionalProfile(self.single) as ncd:
             df = ncd.to_dataframe()
-            with self.assertRaises(NotImplementedError):
-                with OrthogonalMultidimensionalProfile.from_dataframe(df, single_tmp) as result_ncd:
-                    assert 'profile' in result_ncd.dimensions
-                test_is_mine(OrthogonalMultidimensionalProfile, single_tmp)  # Try to load it again
+            with OrthogonalMultidimensionalProfile.from_dataframe(df, single_tmp) as result_ncd:
+                assert 'profile' in result_ncd.dimensions
+        test_is_mine(OrthogonalMultidimensionalProfile, single_tmp)  # Try to load it again
         os.close(fid)
         os.remove(single_tmp)
 
